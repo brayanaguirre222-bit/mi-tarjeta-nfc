@@ -1,50 +1,604 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mi Perfil NFC</title>
-    <style>
-        /* CSS: Aquí es donde damos estilo y colores */
-        body {
-            font-family: Arial, sans-serif;
-            background-color: #f0f2f5;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            height: 100vh;
-            margin: 0;
-        }
-        .card {
-            background: white;
-            padding: 2rem;
-            border-radius: 15px;
-            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
-            text-align: center;
-            max-width: 300px;
-        }
-        h1 { color: #333; }
-        p { color: #666; }
-        .btn {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 10px 20px;
-            background-color: #007bff;
-            color: white;
-            text-decoration: none;
-            border-radius: 5px;
-            transition: background 0.3s;
-        }
-        .btn:hover { background-color: #0056b3; }
-    </style>
-</head>
-<body>
+import React, { useState, useEffect } from 'react';
+import { Heart, Music, Image as ImageIcon, Calendar as CalendarIcon, Trash2, Plus, ExternalLink, Clock, MapPin, History, Sparkles, CalendarDays, ChevronLeft, ChevronRight } from 'lucide-react';
 
-    <div class="card">
-        <h1>¡Hola! Soy Pompellio</h1>
-        <p>Bienvenido a mi página conectada por NFC.</p>
-        <a href="https://tu-link-de-archivo.com" class="btn">Descargar Archivo Seguro</a>
+// --- Configuración de Firebase ---
+// Utilizamos variables globales del entorno para inicializar
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc } from 'firebase/firestore';
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-couple-app';
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [activeTab, setActiveTab] = useState('music');
+  const [isLoading, setIsLoading] = useState(true);
+  const [showHistory, setShowHistory] = useState(false); // Nuevo estado para el historial
+  const [showCalendar, setShowCalendar] = useState(false); // Nuevo estado para el calendario
+  const [calendarMonth, setCalendarMonth] = useState(new Date()); // Mes actual en el calendario
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState(null); // Fecha seleccionada en el calendario
+
+  // --- Estados de Gemini ---
+  const [customMessage, setCustomMessage] = useState("Un espacio creado solo para nosotros. Para guardar nuestra música, recordar nuestros mejores momentos y soñar con los que vienen.");
+  const [isGeneratingMsg, setIsGeneratingMsg] = useState(false);
+  const [isGeneratingDate, setIsGeneratingDate] = useState(false);
+
+  // Estados de datos
+  const [songs, setSongs] = useState([]);
+  const [memories, setMemories] = useState([]);
+  const [dates, setDates] = useState([]);
+
+  // Estados de formularios
+  const [newSong, setNewSong] = useState({ title: '', artist: '', url: '' });
+  const [newMemory, setNewMemory] = useState({ title: '', url: '' });
+  const [newDate, setNewDate] = useState({ title: '', date: '', time: '', description: '' });
+
+  // 1. Inicializar Autenticación
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Error al iniciar sesión:", error);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) {
+        setIsLoading(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Escuchar datos en tiempo real desde Firestore
+  useEffect(() => {
+    if (!user) return;
+
+    // Colecciones públicas (compartidas en esta app)
+    const songsRef = collection(db, 'artifacts', appId, 'public', 'data', 'songs');
+    const memoriesRef = collection(db, 'artifacts', appId, 'public', 'data', 'memories');
+    const datesRef = collection(db, 'artifacts', appId, 'public', 'data', 'dates');
+
+    // Escuchar Canciones
+    const unsubSongs = onSnapshot(songsRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Ordenar en memoria (las más recientes primero basándonos en createdAt)
+      data.sort((a, b) => b.createdAt - a.createdAt);
+      setSongs(data);
+    }, (error) => console.error("Error canciones:", error));
+
+    // Escuchar Recuerdos
+    const unsubMemories = onSnapshot(memoriesRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      data.sort((a, b) => b.createdAt - a.createdAt);
+      setMemories(data);
+    }, (error) => console.error("Error recuerdos:", error));
+
+    // Escuchar Citas
+    const unsubDates = onSnapshot(datesRef, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      // Ordenar en memoria por fecha (las más próximas primero)
+      data.sort((a, b) => new Date(`${a.date}T${a.time || '00:00'}`) - new Date(`${b.date}T${b.time || '00:00'}`));
+      setDates(data);
+    }, (error) => console.error("Error citas:", error));
+
+    return () => {
+      unsubSongs();
+      unsubMemories();
+      unsubDates();
+    };
+  }, [user]);
+
+  // --- Funciones para agregar/eliminar datos ---
+
+  const handleAddSong = async (e) => {
+    e.preventDefault();
+    if (!newSong.title || !newSong.url) return;
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'songs'), {
+        ...newSong,
+        createdAt: Date.now()
+      });
+      setNewSong({ title: '', artist: '', url: '' });
+    } catch (error) {
+      console.error("Error agregando canción:", error);
+    }
+  };
+
+  const handleDeleteItem = async (collectionName, id) => {
+    try {
+      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', collectionName, id));
+    } catch (error) {
+      console.error(`Error eliminando de ${collectionName}:`, error);
+    }
+  };
+
+  const handleAddMemory = async (e) => {
+    e.preventDefault();
+    if (!newMemory.url) return;
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'memories'), {
+        ...newMemory,
+        createdAt: Date.now()
+      });
+      setNewMemory({ title: '', url: '' });
+    } catch (error) {
+      console.error("Error agregando recuerdo:", error);
+    }
+  };
+
+  const handleAddDate = async (e) => {
+    e.preventDefault();
+    if (!newDate.title || !newDate.date) return;
+    try {
+      await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'dates'), {
+        ...newDate,
+        createdAt: Date.now()
+      });
+      setNewDate({ title: '', date: '', time: '', description: '' });
+    } catch (error) {
+      console.error("Error agregando cita:", error);
+    }
+  };
+
+  // --- Funciones de Gemini API ---
+  const callGemini = async (prompt, asJson = false) => {
+    const apiKey = ""; // La API key es inyectada automáticamente en tiempo de ejecución
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+    
+    const payload = {
+      contents: [{ parts: [{ text: prompt }] }],
+      systemInstruction: { parts: [{ text: "Eres un asistente romántico y creativo que ayuda a parejas a tener mejores citas y a expresar su amor de forma tierna y natural." }] }
+    };
+
+    if (asJson) {
+      payload.generationConfig = {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: "OBJECT",
+          properties: {
+            title: { type: "STRING" },
+            description: { type: "STRING" }
+          }
+        }
+      };
+    }
+
+    let retries = 0;
+    const delays = [1000, 2000, 4000, 8000, 16000];
+    
+    while (retries < 5) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        if (!response.ok) throw new Error("API Error");
+        const data = await response.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+        return asJson ? JSON.parse(text) : text;
+      } catch (error) {
+        if (retries === 4) throw error;
+        await new Promise(r => setTimeout(r, delays[retries]));
+        retries++;
+      }
+    }
+  };
+
+  const handleGenerateMessage = async () => {
+    setIsGeneratingMsg(true);
+    try {
+      const prompt = "Escribe un mensaje de amor corto, tierno y profundo (máximo 2 líneas) para dedicar a mi pareja como bienvenida en nuestra aplicación privada. No uses comillas al principio ni al final.";
+      const message = await callGemini(prompt, false);
+      if (message) setCustomMessage(message);
+    } catch (error) {
+      console.error("Error generando mensaje:", error);
+    } finally {
+      setIsGeneratingMsg(false);
+    }
+  };
+
+  const handleSuggestDate = async () => {
+    setIsGeneratingDate(true);
+    try {
+      const prompt = "Genera una idea de cita romántica, creativa, divertida o relajante para una pareja. Devuelve un título corto en 'title' y una breve descripción en 'description' detallando qué hacer y consejos (como qué llevar o dónde ir).";
+      const suggestion = await callGemini(prompt, true);
+      if (suggestion) {
+        setNewDate({ 
+          ...newDate, 
+          title: suggestion.title, 
+          description: suggestion.description 
+        });
+      }
+    } catch (error) {
+      console.error("Error generando idea de cita:", error);
+    } finally {
+      setIsGeneratingDate(false);
+    }
+  };
+
+  // --- UI de las pestañas ---
+
+  const renderMusicTab = () => (
+    <div className="space-y-6 animate-fade-in">
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-pink-100">
+        <h3 className="text-lg font-semibold text-pink-900 mb-4 flex items-center gap-2">
+          <Plus size={20} className="text-pink-500"/> Agregar una canción
+        </h3>
+        <form onSubmit={handleAddSong} className="flex flex-col gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <input type="text" placeholder="Título de la canción" className="input-field"
+                   value={newSong.title} onChange={e => setNewSong({...newSong, title: e.target.value})} required />
+            <input type="text" placeholder="Artista" className="input-field"
+                   value={newSong.artist} onChange={e => setNewSong({...newSong, artist: e.target.value})} />
+          </div>
+          <input type="url" placeholder="Enlace (Spotify, YouTube, etc.)" className="input-field"
+                 value={newSong.url} onChange={e => setNewSong({...newSong, url: e.target.value})} required />
+          <button type="submit" className="btn-primary self-end">Guardar Canción</button>
+        </form>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {songs.length === 0 ? (
+          <p className="text-pink-400 text-center col-span-full py-8">Aún no hay canciones. ¡Agrega su favorita!</p>
+        ) : (
+          songs.map(song => (
+            <div key={song.id} className="bg-white p-4 rounded-xl shadow-sm border border-pink-50 flex items-center justify-between group hover:border-pink-200 transition-colors">
+              <div className="flex items-center gap-4 overflow-hidden">
+                <div className="w-12 h-12 bg-pink-100 rounded-full flex items-center justify-center text-pink-500 flex-shrink-0">
+                  <Music size={24} />
+                </div>
+                <div className="truncate">
+                  <h4 className="font-semibold text-gray-800 truncate">{song.title}</h4>
+                  <p className="text-sm text-gray-500 truncate">{song.artist || 'Sin artista'}</p>
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <a href={song.url} target="_blank" rel="noopener noreferrer" className="p-2 text-pink-400 hover:text-pink-600 hover:bg-pink-50 rounded-full transition-colors">
+                  <ExternalLink size={20} />
+                </a>
+                <button onClick={() => handleDeleteItem('songs', song.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors">
+                  <Trash2 size={20} />
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
     </div>
+  );
 
-</body>
-</html>
+  const renderMemoriesTab = () => (
+    <div className="space-y-6 animate-fade-in">
+      <div className="bg-white p-6 rounded-2xl shadow-sm border border-pink-100">
+        <h3 className="text-lg font-semibold text-pink-900 mb-4 flex items-center gap-2">
+          <Plus size={20} className="text-pink-500"/> Agregar un recuerdo
+        </h3>
+        <p className="text-sm text-gray-500 mb-4">Pega el enlace de la imagen que quieres guardar (puedes usar enlaces de Google Photos, Imgur, etc.)</p>
+        <form onSubmit={handleAddMemory} className="flex flex-col md:flex-row gap-4">
+           <input type="text" placeholder="Título o descripción breve (opcional)" className="input-field md:w-1/3"
+                 value={newMemory.title} onChange={e => setNewMemory({...newMemory, title: e.target.value})} />
+          <input type="url" placeholder="https://..." className="input-field flex-grow"
+                 value={newMemory.url} onChange={e => setNewMemory({...newMemory, url: e.target.value})} required />
+          <button type="submit" className="btn-primary whitespace-nowrap">Guardar Foto</button>
+        </form>
+      </div>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+         {memories.length === 0 ? (
+          <p className="text-pink-400 text-center col-span-full py-8">Aún no hay recuerdos. ¡Agrega una foto especial!</p>
+        ) : (
+          memories.map(memory => (
+            <div key={memory.id} className="bg-white rounded-2xl shadow-sm border border-pink-50 overflow-hidden group">
+              <div className="aspect-square bg-gray-100 relative overflow-hidden">
+                <img src={memory.url} alt={memory.title || "Recuerdo"} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105" 
+                     onError={(e) => { e.target.src = 'https://via.placeholder.com/400x400?text=Imagen+No+Disponible'; }} />
+              </div>
+              <div className="p-4 flex justify-between items-center">
+                <p className="text-gray-700 font-medium truncate pr-4">{memory.title || "Un momento especial"}</p>
+                <button onClick={() => handleDeleteItem('memories', memory.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors flex-shrink-0">
+                  <Trash2 size={20} />
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+
+  const renderDatesTab = () => {
+    // Filtramos las citas automáticamente basándonos en la fecha actual
+    const now = new Date();
+    const upcomingDates = dates.filter(date => new Date(`${date.date}T${date.time || '00:00'}`) >= now);
+    const pastDates = dates.filter(date => new Date(`${date.date}T${date.time || '00:00'}`) < now)
+                             .sort((a, b) => new Date(`${b.date}T${b.time || '00:00'}`) - new Date(`${a.date}T${a.time || '00:00'}`)); // Ordenar historial: más recientes primero
+
+    const displayDates = showHistory ? pastDates : upcomingDates;
+
+    const renderCalendarView = () => {
+      const year = calendarMonth.getFullYear();
+      const month = calendarMonth.getMonth();
+      const daysInMonth = new Date(year, month + 1, 0).getDate();
+      const firstDay = new Date(year, month, 1).getDay();
+
+      const monthNames = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
+      const dayNames = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+
+      const cells = [];
+      // Espacios vacíos antes del primer día del mes
+      for (let i = 0; i < firstDay; i++) {
+        cells.push(<div key={`empty-${i}`} className="p-2"></div>);
+      }
+      
+      // Días del mes
+      for (let d = 1; d <= daysInMonth; d++) {
+        const currentDateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+        const dayDates = dates.filter(date => date.date === currentDateStr);
+        const hasPast = dayDates.some(date => new Date(`${date.date}T${date.time || '00:00'}`) < now);
+        const hasFuture = dayDates.some(date => new Date(`${date.date}T${date.time || '00:00'}`) >= now);
+
+        cells.push(
+          <div key={d} 
+               onClick={() => setSelectedCalendarDate(currentDateStr)}
+               className={`p-2 min-h-[60px] md:min-h-[80px] border rounded-lg cursor-pointer transition-colors relative flex flex-col items-center
+                 ${selectedCalendarDate === currentDateStr ? 'border-pink-500 bg-pink-50' : 'border-gray-100 bg-white hover:bg-pink-50/50'}
+               `}>
+            <span className={`text-sm font-medium ${selectedCalendarDate === currentDateStr ? 'text-pink-700' : 'text-gray-700'}`}>{d}</span>
+            <div className="absolute bottom-2 flex gap-1">
+               {hasPast && <div className="w-2 h-2 rounded-full bg-gray-400" title="Citas pasadas"></div>}
+               {hasFuture && <div className="w-2 h-2 rounded-full bg-pink-500" title="Próximas citas"></div>}
+            </div>
+          </div>
+        );
+      }
+
+      const selectedDayDates = selectedCalendarDate ? dates.filter(date => date.date === selectedCalendarDate) : [];
+
+      return (
+        <div className="bg-white p-4 md:p-6 rounded-2xl shadow-sm border border-pink-100 animate-fade-in">
+          <div className="flex justify-between items-center mb-6">
+            <button onClick={() => setCalendarMonth(new Date(year, month - 1, 1))} className="p-2 text-gray-500 hover:text-pink-500 hover:bg-pink-50 rounded-full transition-colors">
+              <ChevronLeft size={24} />
+            </button>
+            <h3 className="text-xl font-bold text-gray-800 capitalize">{monthNames[month]} {year}</h3>
+            <button onClick={() => setCalendarMonth(new Date(year, month + 1, 1))} className="p-2 text-gray-500 hover:text-pink-500 hover:bg-pink-50 rounded-full transition-colors">
+              <ChevronRight size={24} />
+            </button>
+          </div>
+          
+          <div className="grid grid-cols-7 gap-1 md:gap-2 mb-2">
+            {dayNames.map(day => (
+              <div key={day} className="text-center text-xs font-bold text-gray-400 uppercase tracking-wider py-2">
+                {day}
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-7 gap-1 md:gap-2 mb-6">
+            {cells}
+          </div>
+
+          {selectedCalendarDate && (
+            <div className="mt-6 pt-6 border-t border-pink-100 animate-fade-in">
+              <h4 className="text-lg font-semibold text-pink-900 mb-4 flex items-center gap-2">
+                <CalendarDays size={20} className="text-pink-500" /> Planes para el {selectedCalendarDate}
+              </h4>
+              <div className="space-y-4">
+                {selectedDayDates.length === 0 ? (
+                  <p className="text-gray-500 text-sm italic">No hay citas agendadas para este día.</p>
+                ) : (
+                  selectedDayDates.map(date => {
+                    const isPast = new Date(`${date.date}T${date.time || '00:00'}`) < now;
+                    return (
+                      <div key={date.id} className={`p-4 rounded-xl border ${isPast ? 'border-gray-200 bg-gray-50 opacity-80' : 'border-pink-200 bg-pink-50/50 border-l-4 border-l-pink-400'} flex justify-between items-center`}>
+                         <div>
+                            <h5 className={`font-bold ${isPast ? 'text-gray-600' : 'text-gray-800'}`}>{date.title}</h5>
+                            <div className="flex gap-4 mt-1 text-xs text-gray-500">
+                              {date.time && <span className="flex items-center gap-1"><Clock size={14}/> {date.time}</span>}
+                              {date.description && <span className="flex items-center gap-1"><MapPin size={14}/> {date.description}</span>}
+                            </div>
+                         </div>
+                         <button onClick={() => handleDeleteItem('dates', date.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors">
+                           <Trash2 size={18} />
+                         </button>
+                      </div>
+                    )
+                  })
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    return (
+      <div className="space-y-6 animate-fade-in">
+        <div className="flex justify-between items-center px-2 flex-wrap gap-4">
+          <h2 className="text-xl font-bold text-pink-900 flex items-center gap-2">
+            {showCalendar ? <CalendarDays size={24} className="text-pink-500"/> :
+             showHistory ? <History size={24} className="text-pink-500"/> : 
+             <CalendarIcon size={24} className="text-pink-500"/>}
+            {showCalendar ? 'Calendario' : showHistory ? 'Historial de Citas' : 'Próximas Citas'}
+          </h2>
+          <div className="flex gap-2">
+            <button 
+              onClick={() => { setShowCalendar(!showCalendar); setShowHistory(false); }}
+              className={`flex items-center gap-2 px-3 py-2 md:px-4 md:py-2 rounded-xl font-medium transition-colors text-sm shadow-sm ${showCalendar ? 'bg-pink-500 text-white' : 'bg-pink-100 text-pink-700 hover:bg-pink-200'}`}
+            >
+              <CalendarDays size={16}/>
+              <span className="hidden sm:inline">Calendario</span>
+            </button>
+            {!showCalendar && (
+              <button 
+                onClick={() => setShowHistory(!showHistory)}
+                className="flex items-center gap-2 px-3 py-2 md:px-4 md:py-2 bg-pink-100 text-pink-700 rounded-xl font-medium hover:bg-pink-200 transition-colors text-sm shadow-sm"
+              >
+                {showHistory ? <CalendarIcon size={16}/> : <History size={16}/>}
+                <span className="hidden sm:inline">{showHistory ? 'Ver Próximas' : 'Ver Historial'}</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {showCalendar ? renderCalendarView() : (
+          <>
+            {!showHistory && (
+              <div className="bg-white p-6 rounded-2xl shadow-sm border border-pink-100">
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-2">
+                  <h3 className="text-lg font-semibold text-pink-900 flex items-center gap-2">
+                    <Plus size={20} className="text-pink-500"/> Planear nueva cita
+                  </h3>
+                  <button 
+                    type="button" 
+                    onClick={handleSuggestDate} 
+                    disabled={isGeneratingDate} 
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-600 rounded-lg text-sm font-medium transition-colors border border-purple-100 disabled:opacity-50"
+                  >
+                    <Sparkles size={16} className={`${isGeneratingDate ? 'animate-spin' : ''}`} />
+                    {isGeneratingDate ? "Pensando idea..." : "✨ Sugerir Plan Mágico"}
+                  </button>
+                </div>
+                <form onSubmit={handleAddDate} className="flex flex-col gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <input type="text" placeholder="¿Qué vamos a hacer?" className="input-field md:col-span-3"
+                           value={newDate.title} onChange={e => setNewDate({...newDate, title: e.target.value})} required />
+                    <input type="date" className="input-field"
+                           value={newDate.date} onChange={e => setNewDate({...newDate, date: e.target.value})} required />
+                    <input type="time" className="input-field"
+                           value={newDate.time} onChange={e => setNewDate({...newDate, time: e.target.value})} />
+                    <input type="text" placeholder="Notas adicionales (Lugar, ropa...)" className="input-field"
+                           value={newDate.description} onChange={e => setNewDate({...newDate, description: e.target.value})} />
+                  </div>
+                  <button type="submit" className="btn-primary self-end">Agendar Cita</button>
+                </form>
+              </div>
+            )}
+
+            <div className="space-y-4">
+              {displayDates.length === 0 ? (
+                <p className="text-pink-400 text-center py-8">
+                  {showHistory ? 'Aún no hay citas pasadas en el historial.' : 'No hay citas planeadas aún. ¡Es hora de organizar algo divertido!'}
+                </p>
+              ) : (
+                displayDates.map(date => {
+                  const isPast = showHistory; // En la vista de historial, marcamos todas como pasadas para el estilo visual
+                  
+                  return (
+                    <div key={date.id} className={`bg-white p-5 rounded-2xl shadow-sm border ${isPast ? 'border-gray-200 opacity-80' : 'border-pink-200 border-l-4 border-l-pink-400'} flex flex-col md:flex-row gap-4 items-start md:items-center justify-between`}>
+                      <div className="flex-grow">
+                        <h4 className={`text-lg font-bold ${isPast ? 'text-gray-600' : 'text-gray-800'}`}>{date.title}</h4>
+                        <div className="flex flex-wrap gap-4 mt-2 text-sm text-gray-500">
+                          <span className="flex items-center gap-1"><CalendarIcon size={16}/> {date.date}</span>
+                          {date.time && <span className="flex items-center gap-1"><Clock size={16}/> {date.time}</span>}
+                          {date.description && <span className="flex items-center gap-1"><MapPin size={16}/> {date.description}</span>}
+                        </div>
+                      </div>
+                      <button onClick={() => handleDeleteItem('dates', date.id)} className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors">
+                        <Trash2 size={20} />
+                      </button>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
+
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-pink-50 flex items-center justify-center">
+        <Heart className="text-pink-400 animate-pulse w-12 h-12" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-pink-50 font-sans text-gray-800 pb-20">
+      {/* Estilos Base incrustados para mantener el archivo único */}
+      <style dangerouslySetInnerHTML={{__html: `
+        .input-field {
+          width: 100%; padding: 0.75rem 1rem; border-radius: 0.75rem; border: 1px solid #fbcfe8;
+          background-color: #fdf2f8; outline: none; transition: all 0.2s;
+        }
+        .input-field:focus { border-color: #f472b6; background-color: #fff; box-shadow: 0 0 0 3px rgba(244, 114, 182, 0.2); }
+        .btn-primary {
+          background: linear-gradient(135deg, #f472b6, #ec4899); color: white; padding: 0.75rem 1.5rem;
+          border-radius: 0.75rem; font-weight: 600; transition: all 0.2s; shadow-md;
+        }
+        .btn-primary:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(236, 72, 153, 0.3); }
+        .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+      `}} />
+
+      {/* Header / Bienvenida */}
+      <header className="bg-white pt-16 pb-12 px-6 rounded-b-[3rem] shadow-sm mb-8 text-center relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-pink-300 via-pink-400 to-pink-300"></div>
+        <Heart className="mx-auto text-pink-400 w-16 h-16 mb-4 drop-shadow-sm fill-pink-50" />
+        <h1 className="text-4xl md:text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-rose-400 mb-4 tracking-tight">
+          Nuestro Pequeño Rincón
+        </h1>
+        <p className="text-lg md:text-xl text-gray-600 max-w-2xl mx-auto italic font-medium mb-6">
+          "{customMessage}"
+        </p>
+        <button 
+          onClick={handleGenerateMessage} 
+          disabled={isGeneratingMsg} 
+          className="mx-auto flex items-center gap-2 text-sm text-pink-500 hover:text-pink-700 bg-pink-50 hover:bg-pink-100 px-4 py-2 rounded-full transition-colors border border-pink-100 disabled:opacity-50"
+        >
+          <Sparkles size={16} className={`${isGeneratingMsg ? 'animate-pulse' : ''}`} />
+          {isGeneratingMsg ? "Escribiendo con amor..." : "✨ Inspiración romántica"}
+        </button>
+      </header>
+
+      <main className="max-w-6xl mx-auto px-4 sm:px-6">
+        {/* Navegación por pestañas */}
+        <div className="flex justify-center mb-8 overflow-x-auto py-2">
+          <div className="flex gap-2 bg-white p-2 rounded-2xl shadow-sm border border-pink-100 min-w-max">
+            <button 
+              onClick={() => setActiveTab('music')}
+              className={`flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all ${activeTab === 'music' ? 'bg-pink-100 text-pink-700 shadow-sm' : 'text-gray-500 hover:bg-pink-50 hover:text-pink-600'}`}
+            >
+              <Music size={20} /> Nuestra Música
+            </button>
+            <button 
+              onClick={() => setActiveTab('memories')}
+              className={`flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all ${activeTab === 'memories' ? 'bg-pink-100 text-pink-700 shadow-sm' : 'text-gray-500 hover:bg-pink-50 hover:text-pink-600'}`}
+            >
+              <ImageIcon size={20} /> Recuerdos
+            </button>
+            <button 
+              onClick={() => setActiveTab('dates')}
+              className={`flex items-center gap-2 px-6 py-3 rounded-xl font-medium transition-all ${activeTab === 'dates' ? 'bg-pink-100 text-pink-700 shadow-sm' : 'text-gray-500 hover:bg-pink-50 hover:text-pink-600'}`}
+            >
+              <CalendarIcon size={20} /> Citas
+            </button>
+          </div>
+        </div>
+
+        {/* Contenido dinámico */}
+        <div className="min-h-[400px]">
+          {activeTab === 'music' && renderMusicTab()}
+          {activeTab === 'memories' && renderMemoriesTab()}
+          {activeTab === 'dates' && renderDatesTab()}
+        </div>
+      </main>
+    </div>
+  );
+}
